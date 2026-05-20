@@ -2,9 +2,15 @@
 
 import asyncio
 import heapq
+import logging
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Set
 from uuid import uuid4
+
+from src.common.metrics import metrics
+
+
+logger = logging.getLogger(__name__)
 
 
 class PriorityQueue:
@@ -35,13 +41,17 @@ class TaskScheduler:
         self._queues: Dict[str, PriorityQueue] = {}
         self._scheduled: Dict[str, float] = {}
         self._in_flight: Dict[str, Dict] = {}
+        self._dead_letters: Dict[str, Dict] = {}
+        self._completed: Set[str] = set()
         self._max_retries = 3
 
     def enqueue(self, task: Dict, queue: str = "default", priority: int = 0) -> str:
-        task_id = str(uuid4())
+        task = dict(task)
+        task_id = task.get("id") or str(uuid4())
         task["id"] = task_id
         task["enqueued_at"] = time.time()
-        task["retries"] = 0
+        task.setdefault("retries", 0)
+        task["priority"] = priority
 
         if queue not in self._queues:
             self._queues[queue] = PriorityQueue()
@@ -70,16 +80,41 @@ class TaskScheduler:
         return None
 
     def complete(self, task_id: str) -> bool:
-        return self._in_flight.pop(task_id, None) is not None
+        task = self._in_flight.pop(task_id, None)
+        if task is None:
+            return task_id in self._completed
+        self._completed.add(task_id)
+        return True
 
     def fail(self, task_id: str, queue: str = "default") -> bool:
         task = self._in_flight.pop(task_id, None)
-        if task:
-            task["retries"] += 1
-            if task["retries"] < self._max_retries:
-                self.enqueue(task, queue, priority=task.get("priority", 0))
-                return True
-        return False
+        if task is None:
+            return task_id in self._dead_letters
+
+        task["retries"] += 1
+        if task["retries"] < self._max_retries:
+            self.enqueue(task, queue, priority=task.get("priority", 0))
+            metrics.increment("scheduler.task_retried")
+            logger.info("task retry scheduled", extra={"task_id": task_id, "retries": task["retries"]})
+            return True
+
+        self._dead_letter(task_id, task)
+        return True
+
+    def dead_letters(self) -> List[Dict]:
+        return [dict(task) for task in self._dead_letters.values()]
+
+    def _dead_letter(self, task_id: str, task: Dict) -> None:
+        if task_id in self._dead_letters:
+            return
+        dead_letter = dict(task)
+        dead_letter["dead_lettered_at"] = time.time()
+        self._dead_letters[task_id] = dead_letter
+        metrics.increment("scheduler.task_dead_lettered")
+        logger.warning(
+            "task moved to dead letter",
+            extra={"task_id": task_id, "retries": dead_letter["retries"]},
+        )
 
 # 2019-04-25T08:37:12 update
 
