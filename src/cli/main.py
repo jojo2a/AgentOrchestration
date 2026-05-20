@@ -1,6 +1,7 @@
 """CLI entry point for the agent orchestrator."""
 
 import argparse
+from pathlib import Path
 import sys
 
 from src.common.config import Config
@@ -37,6 +38,10 @@ def cli():
     if args.command == "init":
         print(f"Initializing project: {args.name}")
     elif args.command == "deploy":
+        manifest_path = Path(args.manifest)
+        if not manifest_path.is_file():
+            print(f"Manifest not found: {args.manifest}", file=sys.stderr)
+            sys.exit(2)
         print(f"Deploying agent from manifest: {args.manifest}")
     elif args.command == "status":
         print("Checking agent status...")
