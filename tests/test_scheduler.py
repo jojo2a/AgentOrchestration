@@ -36,6 +36,36 @@ class TestTaskScheduler:
         task = asyncio.run(self.scheduler.dequeue())
         assert self.scheduler.fail(task["id"])
 
+    def test_fail_retries_keep_task_id_and_retry_count(self):
+        task_id = self.scheduler.enqueue({"type": "test"})
+
+        import asyncio
+        task = asyncio.run(self.scheduler.dequeue())
+        assert self.scheduler.fail(task["id"])
+
+        retried = asyncio.run(self.scheduler.dequeue())
+        assert retried["id"] == task_id
+        assert retried["retries"] == 1
+
+    def test_ack_retry_dead_letters_once(self):
+        task_id = self.scheduler.enqueue({"type": "test"})
+
+        import asyncio
+        task = asyncio.run(self.scheduler.dequeue())
+        assert self.scheduler.fail(task["id"])
+
+        task = asyncio.run(self.scheduler.dequeue())
+        assert self.scheduler.fail(task["id"])
+
+        task = asyncio.run(self.scheduler.dequeue())
+        assert self.scheduler.fail(task["id"])
+
+        assert self.scheduler.fail(task_id)
+        dead_letters = self.scheduler.dead_letters()
+        assert len(dead_letters) == 1
+        assert dead_letters[0]["id"] == task_id
+        assert dead_letters[0]["retries"] == 3
+
 # 2019-01-09T19:07:03 update
 
 # 2019-02-18T12:30:02 update
